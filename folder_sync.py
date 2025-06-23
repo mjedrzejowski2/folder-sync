@@ -4,8 +4,9 @@ import json
 import argparse
 import shutil
 import hashlib
+import time
 
-from time import time
+from pathlib import Path
 from dataclasses import dataclass
 
 logger = logging.getLogger("folder_sync")
@@ -127,13 +128,13 @@ class LoggerConfigurator:
 
     Attributes:
         file_log_path (str): path to the log file
-        logger_name (str): name of the logger
+        logger_name (str): name of the logger (defaults to "folder_sync")
     """
 
     def __init__(self, file_log_path, logger_name="folder_sync"):
         """Initializes the LoggerConfigurator.
 
-        Attributes:
+        Args:
             file_log_path (str): path to the log file
             logger_name (str): name of the logger (defaults to "folder_sync")
         """
@@ -170,7 +171,7 @@ class LoggerConfigurator:
 
 
 class SynchronizeFiles:
-    """Performs one-way synchronization between given source and replica folders
+    """Performs one-way synchronization between given source and replica folders.
 
     Attributes:
         sync_interval (int): Interval in seconds between sync runs
@@ -192,11 +193,11 @@ class SynchronizeFiles:
         """
         self.sync_interval = sync_interval
         self.sync_numbers = sync_numbers
-        self.source_folder_path = source_folder_path
-        self.replica_folder_path = replica_folder_path
+        self.source_folder_path = Path(source_folder_path).resolve()
+        self.replica_folder_path = Path(replica_folder_path).resolve()
 
     def run(self):
-        """Executes sync process for specified number of times"""
+        """Executes sync process for specified number of times."""
         for i in range(self.sync_numbers):
             logger.info(f"Starting sync run {i + 1}/{self.sync_numbers}")
             self._sync_once()
@@ -207,49 +208,67 @@ class SynchronizeFiles:
                 time.sleep(self.sync_interval)
 
     def _sync_once(self):
-        """Performs single full sync which include adding, updating and removing files"""
+        """Performs single full sync which include adding, updating and removing files."""
         self._check_and_sync()
         self._remove_extras()
 
     def _check_and_sync(self):
-        """Synchronizes the source folder with the replica folder by copying new or modified files from the source folder"""
+        """Synchronizes the source folder with the replica folder by copying new or modified files from the source folder."""
         for root, _, files in os.walk(self.source_folder_path):
-            replica_root_path = self._get_replica_root_path(root)
+            root_path = Path(root)
+            replica_root_path = self._get_replica_root_path(root_path)
 
-            if not os.path.exists(replica_root_path):
-                os.makedirs(replica_root_path)
+            if not replica_root_path.exists():
+                replica_root_path.mkdir(parents=True)
+                logger.info(f"Created directory: {replica_root_path}")
 
             for file in files:
-                source_file_path = os.path.join(root, file)
-                replica_file_path = os.path.join(replica_root_path, file)
+                source_file_path = root_path / file
+                replica_file_path = replica_root_path / file
 
-                if not os.path.exists(replica_file_path) or self._file_changed(
+                if not replica_file_path.exists() or self._file_changed(
                     source_file_path, replica_file_path
                 ):
-                    shutil.copy2(source_file_path, replica_file_path)
+                    try:
+                        shutil.copy2(source_file_path, replica_file_path)
+                        logger.info(
+                            f"Copied/updated: {source_file_path} to {replica_file_path}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to copy {source_file_path}: {e}")
 
     def _remove_extras(self):
-        """Removes files and directories from the replica folder that no longer exist in the source folder"""
-        for root, dirs, files in os.walk(self.source_folder_path, topdown=False):
-            source_rel_path = os.path.relpath(root, self.source_folder_path)
-            replica_root_path = self._get_replica_root_path(root)
+        """Removes files and directories from the replica folder that no longer exist in the source folder."""
+        for root, dirs, files in os.walk(self.replica_folder_path, topdown=False):
+            root_path = Path(root)
+            source_root_path = self._get_source_root_path(root_path)
 
             for file in files:
-                source_file_path = os.path.join(root, file)
-                replica_file_path = os.path.join(replica_root_path, file)
+                replica_file_path = root_path / file
+                source_file_path = source_root_path / file
 
-                if not os.path.exists(source_file_path):
-                    os.remove(replica_file_path)
+                if not source_file_path.exists():
+                    try:
+                        replica_file_path.unlink()
+                        logger.info(f"Removed file: {replica_file_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to remove file {replica_file_path}: {e}")
 
             for dir in dirs:
-                replica_dir_path = os.path.join(root, dir)
-                source_dir_path = os.path.join(source_rel_path)
+                replica_dir_path = root_path / dir
+                source_dir_path = source_root_path / dir
 
-                if not os.path.exists(source_dir_path):
-                    shutil.rmtree(replica_dir_path)
+                if not source_dir_path.exists():
+                    try:
+                        shutil.rmtree(replica_dir_path)
+                        logger.info(f"Removed directory: {replica_dir_path}")
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to remove directory {replica_dir_path}: {e}"
+                        )
 
     def _sha256_check(self, file_path):
-        """Computes the SHA-256 hash of the given file
+        """Computes the SHA-256 hash of the given file.
 
         Args:
             file_path (str): Absolute path to the file for hash calculation
@@ -265,38 +284,61 @@ class SynchronizeFiles:
         return hash_sha256.hexdigest()
 
     def _file_changed(self, file_1, file_2):
-        """Compares two files to determine if their contents differ using SHA-256 hashing
+        """Compares two files to determine if their contents differ using SHA-256 hashing.
 
         Args:
             file_1 (str): Path to the first file
             file_2 (str): Path to the second file
 
         Returns:
-            bool: False if the files differ"""
-        return self._sha256_check(file_1) == self._sha256_check(file_2)
+            bool: True if the files differ"""
+        return self._sha256_check(file_1) != self._sha256_check(file_2)
 
-    def _get_replica_root_path(self, root_path):
-        source_rel_path = os.path.relpath(root_path, self.source_folder_path)
-        return os.path.join(self.replica_folder_path, source_rel_path)
+    def _get_replica_root_path(self, source_root_path):
+        """
+        Computes the corresponding replica directory for given source directory.
+
+        Args:
+            source_root_path (Path): Path inside the source directory
+
+        Returns:
+            Path: Corresponding path inside the replica folder
+        """
+        source_rel_path = source_root_path.relative_to(self.source_folder_path)
+        return self.replica_folder_path / source_rel_path
+
+    def _get_source_root_path(self, replica_root_path: Path) -> Path:
+        """
+        Computes the corresponding source directory for a given replica directory.
+
+        Args:
+            replica_root_path (Path): Path inside the replica directory
+
+        Returns:
+            Path: Corresponding path inside the source folder
+        """
+        replica_rel_path = replica_root_path.relative_to(self.replica_folder_path)
+        return self.source_folder_path / replica_rel_path
 
 
 def main():
     # Parse arguments
     parser = CLIParser()
-    test = parser.load_config()
-    print(test)
+    sync_config = parser.load_config()
+    print(sync_config)
 
     # Configure logger
-    LoggerConfigurator(test.log_file_path).setup_logger()
+    LoggerConfigurator(sync_config.log_file_path).setup_logger()
 
-    test2 = SynchronizeFiles(
-        test.sync_interval,
-        test.sync_numbers,
-        test.source_folder_path,
-        test.replica_folder_path,
+    # Configure synchronization
+    sync_task = SynchronizeFiles(
+        sync_config.sync_interval,
+        sync_config.sync_numbers,
+        sync_config.source_folder_path,
+        sync_config.replica_folder_path,
     )
-
-    test2.run()
+    # Start synchronization
+    sync_task.run()
 
 
 if __name__ == "__main__":
