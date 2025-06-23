@@ -9,8 +9,6 @@ import time
 from pathlib import Path
 from dataclasses import dataclass
 
-logger = logging.getLogger("folder_sync")
-
 
 @dataclass
 class Config:
@@ -82,7 +80,7 @@ class CLIParser:
             print(f"Argument parsing error: {err}")
             raise
         except SystemExit as err:
-            print(f"Invalid command-line arguments or --help called. Error: {err}")
+            print(f"Invalid command-line arguments or '--help' called. Error: {err}")
             raise
 
 
@@ -98,13 +96,19 @@ class JsonLogFormatter(logging.Formatter):
         Returns:
             JSON formatted string
         """
+        try:
+            message = record.getMessage()
+        except Exception as err:
+            message = f"Failed to format log message. Error:{err}"
+
         log_record = {
             "timestamp": self.formatTime(record),
             "level": record.levelname,
-            "message": record.getMessage(),
+            "message": message,
             "function": record.funcName,
             "line": record.lineno,
         }
+
         return json.dumps(log_record, ensure_ascii=False)
 
 
@@ -120,7 +124,12 @@ class ConsoleLogFormatter(logging.Formatter):
         Returns:
             Formatted string with timestamp, log level and message
         """
-        return f"[{self.formatTime(record)}] {record.levelname} {record.getMessage()}"
+        try:
+            message = record.getMessage()
+        except Exception as err:
+            message = f"Failed to format log message. Error:{err}"
+
+        return f"[{self.formatTime(record)}] {record.levelname} {message}"
 
 
 class LoggerConfigurator:
@@ -148,19 +157,23 @@ class LoggerConfigurator:
             logging.Logger: Configured logger object
         """
         console_log_level = "INFO"
-        file_log_level = "ERROR"
+        file_log_level = "INFO"
 
         logger = logging.getLogger(self.logger_name)
+        logger.setLevel(logging.DEBUG)
         logger.handlers.clear()
 
         # File handler
-        file_handler = logging.FileHandler(
-            self.file_log_path, mode="w", encoding="utf-8"
-        )
-        file_handler.setFormatter(JsonLogFormatter())
-        file_handler.setLevel(getattr(logging, file_log_level))
+        try:
+            file_handler = logging.FileHandler(
+                self.file_log_path, mode="w", encoding="utf-8"
+            )
+            file_handler.setFormatter(JsonLogFormatter())
+            file_handler.setLevel(getattr(logging, file_log_level))
 
-        logger.addHandler(file_handler)
+            logger.addHandler(file_handler)
+        except OSError as err:
+            print(f"Couldn't initialize log setup for file handler. Error: {err}")
 
         # Console handler
         console_handler = logging.StreamHandler()
@@ -168,6 +181,7 @@ class LoggerConfigurator:
         console_handler.setLevel(getattr(logging, console_log_level))
 
         logger.addHandler(console_handler)
+        return logger
 
 
 class SynchronizeFiles:
@@ -181,7 +195,12 @@ class SynchronizeFiles:
     """
 
     def __init__(
-        self, sync_interval, sync_numbers, source_folder_path, replica_folder_path
+        self,
+        sync_interval,
+        sync_numbers,
+        source_folder_path,
+        replica_folder_path,
+        logger,
     ):
         """Initializes the SynchronizeFiles
 
@@ -190,21 +209,23 @@ class SynchronizeFiles:
             sync_numbers (int): Number of total sync cycles
             source_folder_path (str): Absolute path to the source folder
             replica_folder_path (str): Absolute path to the replica folder
+            logger (logging.Logger):
         """
         self.sync_interval = sync_interval
         self.sync_numbers = sync_numbers
         self.source_folder_path = Path(source_folder_path).resolve()
         self.replica_folder_path = Path(replica_folder_path).resolve()
+        self.logger = logger
 
     def run(self):
         """Executes sync process for specified number of times."""
         for i in range(self.sync_numbers):
-            logger.info(f"Starting sync run {i + 1}/{self.sync_numbers}")
+            self.logger.info(f"Starting sync run {i + 1}/{self.sync_numbers}")
             self._sync_once()
-            logger.info(f"Finished sync run {i + 1}/{self.sync_numbers}")
+            self.logger.info(f"Finished sync run {i + 1}/{self.sync_numbers}")
 
             if i < self.sync_numbers - 1:  # prevent from sleeping at last iteration
-                logger.debug(f"Sleeping for {self.sync_interval} seconds")
+                self.logger.debug(f"Sleeping for {self.sync_interval} seconds")
                 time.sleep(self.sync_interval)
 
     def _sync_once(self):
@@ -218,9 +239,19 @@ class SynchronizeFiles:
             root_path = Path(root)
             replica_root_path = self._get_replica_root_path(root_path)
 
+            if replica_root_path is None:
+                self.logger.error(f"Skipping sync: Invalid source path {root_path}")
+                continue
+
             if not replica_root_path.exists():
-                replica_root_path.mkdir(parents=True)
-                logger.info(f"Created directory: {replica_root_path}")
+                try:
+                    replica_root_path.mkdir(parents=True)
+                    self.logger.info(f"Created directory: {replica_root_path}")
+                except OSError as err:
+                    self.logger.error(
+                        f"Failed to create directory {replica_root_path}. Error: {err}"
+                    )
+                    continue  # no dir no files
 
             for file in files:
                 source_file_path = root_path / file
@@ -231,17 +262,23 @@ class SynchronizeFiles:
                 ):
                     try:
                         shutil.copy2(source_file_path, replica_file_path)
-                        logger.info(
+                        self.logger.info(
                             f"Copied/updated: {source_file_path} to {replica_file_path}"
                         )
-                    except Exception as e:
-                        logger.error(f"Failed to copy {source_file_path}: {e}")
+                    except (OSError, shutil.Error) as err:
+                        self.logger.error(
+                            f"Failed to copy/update {source_file_path}. Error: {err}"
+                        )
 
     def _remove_extras(self):
         """Removes files and directories from the replica folder that no longer exist in the source folder."""
         for root, dirs, files in os.walk(self.replica_folder_path, topdown=False):
             root_path = Path(root)
             source_root_path = self._get_source_root_path(root_path)
+
+            if source_root_path is None:
+                self.logger.error(f"Skipping sync: Invalid replica path: {root_path}")
+                continue
 
             for file in files:
                 replica_file_path = root_path / file
@@ -250,9 +287,11 @@ class SynchronizeFiles:
                 if not source_file_path.exists():
                     try:
                         replica_file_path.unlink()
-                        logger.info(f"Removed file: {replica_file_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to remove file {replica_file_path}: {e}")
+                        self.logger.info(f"Removed file: {replica_file_path}")
+                    except OSError as err:
+                        self.logger.error(
+                            f"Failed to remove file {replica_file_path}. Error: {err}"
+                        )
 
             for dir in dirs:
                 replica_dir_path = root_path / dir
@@ -261,10 +300,10 @@ class SynchronizeFiles:
                 if not source_dir_path.exists():
                     try:
                         shutil.rmtree(replica_dir_path)
-                        logger.info(f"Removed directory: {replica_dir_path}")
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to remove directory {replica_dir_path}: {e}"
+                        self.logger.info(f"Removed directory: {replica_dir_path}")
+                    except OSError as err:
+                        self.logger.error(
+                            f"Failed to remove directory {replica_dir_path}. Error: {err}"
                         )
 
     def _sha256_check(self, file_path):
@@ -277,22 +316,46 @@ class SynchronizeFiles:
             str: The SHA-256 hexadecimal digest of the file
         """
         hash_sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_sha256.update(chunk)
 
-        return hash_sha256.hexdigest()
+        try:
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_sha256.update(chunk)
+            return hash_sha256.hexdigest()
+        except OSError as err:
+            self.logger.error(
+                f"Failed to read file for hashing: {file_path}. Error: {err}"
+            )
+            return None
 
-    def _file_changed(self, file_1, file_2):
+    def _file_changed(self, source_file, replica_file):
         """Compares two files to determine if their contents differ using SHA-256 hashing.
 
+        - If the source file cannot be read, syncing is skipped to avoid data loss.
+        - If the replica cannot be read, it needs to be updated.
+
         Args:
-            file_1 (str): Path to the first file
-            file_2 (str): Path to the second file
+            source_file (Path): Path to the source file
+            replica_file (Path): Path to the replica file
 
         Returns:
             bool: True if the files differ"""
-        return self._sha256_check(file_1) != self._sha256_check(file_2)
+        source_hash = self._sha256_check(source_file)
+        replica_hash = self._sha256_check(replica_file)
+
+        if source_hash is None:
+            self.logger.error(
+                f"Skipping sync: failed to read source file {source_file}"
+            )
+            return False  # Do not sync if source is unreadable
+
+        if replica_hash is None:
+            self.logger.warning(
+                f"Starting sync: failed to read replica file {replica_file}"
+            )
+            return True  # Trigger sync to recreate it
+
+        return source_hash != replica_hash
 
     def _get_replica_root_path(self, source_root_path):
         """
@@ -304,8 +367,14 @@ class SynchronizeFiles:
         Returns:
             Path: Corresponding path inside the replica folder
         """
-        source_rel_path = source_root_path.relative_to(self.source_folder_path)
-        return self.replica_folder_path / source_rel_path
+        try:
+            source_rel_path = source_root_path.relative_to(self.source_folder_path)
+            return self.replica_folder_path / source_rel_path
+        except ValueError as err:
+            self.logger.error(
+                f"Invalid source path: {source_root_path} is not under source folder. Error: {err}"
+            )
+            return None
 
     def _get_source_root_path(self, replica_root_path: Path) -> Path:
         """
@@ -317,18 +386,23 @@ class SynchronizeFiles:
         Returns:
             Path: Corresponding path inside the source folder
         """
-        replica_rel_path = replica_root_path.relative_to(self.replica_folder_path)
-        return self.source_folder_path / replica_rel_path
+        try:
+            replica_rel_path = replica_root_path.relative_to(self.replica_folder_path)
+            return self.source_folder_path / replica_rel_path
+        except ValueError as err:
+            self.logger.error(
+                f"Invalid replica path: {replica_root_path} is not under replica folder. Error: {err}"
+            )
+            return None
 
 
 def main():
     # Parse arguments
     parser = CLIParser()
     sync_config = parser.load_config()
-    print(sync_config)
 
     # Configure logger
-    LoggerConfigurator(sync_config.log_file_path).setup_logger()
+    logger = LoggerConfigurator(sync_config.log_file_path).setup_logger()
 
     # Configure synchronization
     sync_task = SynchronizeFiles(
@@ -336,6 +410,7 @@ def main():
         sync_config.sync_numbers,
         sync_config.source_folder_path,
         sync_config.replica_folder_path,
+        logger,
     )
     # Start synchronization
     sync_task.run()
