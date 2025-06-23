@@ -13,6 +13,16 @@ logger = logging.getLogger("folder_sync")
 
 @dataclass
 class Config:
+    """Holds configuration settings parsed from command-line args.
+
+    Attributes:
+        source_folder_path (str): Path to source folder
+        replica_folder_path (str): Path to replica folder
+        sync_interval (int): Number of intervals between synchronizations
+        sync_numbers (int): Total number of synchronization runs
+        log_file_path (str): Path to log file (json format)
+    """
+
     source_folder_path: str
     replica_folder_path: str
     sync_interval: int
@@ -21,15 +31,25 @@ class Config:
 
 
 class CLIParser:
-    """CLI Parser that reads the required arguments for the folder synchronization program"""
+    """Reads the required arguments for the folder synchronization program."""
 
     def __init__(self):
+        """Initializes the CLIParser"""
         self.parser = argparse.ArgumentParser(
             description="One-way folder synchronization tool"
         )
         self._setup_arguments()
 
     def _setup_arguments(self):
+        """Defines expected arguments.
+
+        Args:
+            source_folder_path (str): Path to source folder
+            replica_folder_path (str): Path to replica folder
+            sync_interval (int): Number of intervals between synchronizations
+            sync_numbers (int): Total number of synchronization runs
+            log_file_path (str): Path to log file (json format)
+        """
         self.parser.add_argument(
             "source_folder_path", type=str, help="Path to source folder"
         )
@@ -42,17 +62,17 @@ class CLIParser:
             help="Number of intervals between synchronizations",
         )
         self.parser.add_argument(
-            "sync_numbers", type=int, help="Amount of synchronizations"
+            "sync_numbers", type=int, help="Total number of synchronization runs"
         )
         self.parser.add_argument(
             "log_file_path", type=str, help="Path to log file (json format)"
         )
 
     def load_config(self):
-        """Parses the CLI arguments and returns them as Config dataclass
+        """Parses the CLI arguments and returns them as Config dataclass.
 
         Returns:
-            Config dataclass
+            Config: Object containing all parsed arguments
         """
         try:
             raw_args = self.parser.parse_args()
@@ -192,6 +212,7 @@ class SynchronizeFiles:
         self._remove_extras()
 
     def _check_and_sync(self):
+        """Synchronizes the source folder with the replica folder by copying new or modified files from the source folder"""
         for root, _, files in os.walk(self.source_folder_path):
             replica_root_path = self._get_replica_root_path(root)
 
@@ -208,6 +229,7 @@ class SynchronizeFiles:
                     shutil.copy2(source_file_path, replica_file_path)
 
     def _remove_extras(self):
+        """Removes files and directories from the replica folder that no longer exist in the source folder"""
         for root, dirs, files in os.walk(self.source_folder_path, topdown=False):
             source_rel_path = os.path.relpath(root, self.source_folder_path)
             replica_root_path = self._get_replica_root_path(root)
@@ -227,6 +249,14 @@ class SynchronizeFiles:
                     shutil.rmtree(replica_dir_path)
 
     def _sha256_check(self, file_path):
+        """Computes the SHA-256 hash of the given file
+
+        Args:
+            file_path (str): Absolute path to the file for hash calculation
+
+        Returns:
+            str: The SHA-256 hexadecimal digest of the file
+        """
         hash_sha256 = hashlib.sha256()
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
@@ -235,6 +265,14 @@ class SynchronizeFiles:
         return hash_sha256.hexdigest()
 
     def _file_changed(self, file_1, file_2):
+        """Compares two files to determine if their contents differ using SHA-256 hashing
+
+        Args:
+            file_1 (str): Path to the first file
+            file_2 (str): Path to the second file
+
+        Returns:
+            bool: False if the files differ"""
         return self._sha256_check(file_1) == self._sha256_check(file_2)
 
     def _get_replica_root_path(self, root_path):
@@ -258,7 +296,7 @@ def main():
         test.replica_folder_path,
     )
 
-    test2._check_and_sync()
+    test2.run()
 
 
 if __name__ == "__main__":
