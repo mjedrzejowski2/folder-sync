@@ -49,7 +49,7 @@ class CLIParser:
             replica_folder_path (str): Path to replica folder
             sync_interval (int): Number of intervals between synchronizations
             sync_numbers (int): Total number of synchronization runs
-            log_file_path (str): Path to log file (json format)
+            log_file_path (str): Path to log file
         """
         self.parser.add_argument(
             "source_folder_path", type=str, help="Path to source folder"
@@ -65,73 +65,56 @@ class CLIParser:
         self.parser.add_argument(
             "sync_numbers", type=int, help="Total number of synchronization runs"
         )
-        self.parser.add_argument(
-            "log_file_path", type=str, help="Path to log file (json format)"
-        )
+        self.parser.add_argument("log_file_path", type=str, help="Path to log file")
 
-    def load_config(self):
+    def load_config(self) -> Config | None:
         """Parses the CLI arguments and returns them as Config dataclass.
 
         Returns:
             Config: Object containing all parsed arguments
+            None: if parsing failed
         """
         try:
             raw_args = self.parser.parse_args()
             return Config(**vars(raw_args))
         except argparse.ArgumentError as err:
             print(f"Argument parsing error: {err}")
-            raise
+            return None
         except SystemExit as err:
             print(f"Invalid command-line arguments or '--help' called. Error: {err}")
-            raise
+            return None
 
 
-class JsonLogFormatter(logging.Formatter):
-    """Custom log formatter that formats logs in JSON structure for file log output."""
+class FileLogFormatter(logging.Formatter):
+    """Custom log formatter for file log output."""
 
-    def format(self, record):
-        """Format log record into JSON string.
+    def format(self, record: logging.LogRecord) -> str:
+        """Format log record for file log output.
 
         Args:
-            record: Log record containing event information
+            record (logging.LogRecord): Log record containing event information
 
         Returns:
-            JSON formatted string
+            str: Formatted log string
         """
-        try:
-            message = record.getMessage()
-        except Exception as err:
-            message = f"Failed to format log message. Error:{err}"
 
-        log_record = {
-            "timestamp": self.formatTime(record),
-            "level": record.levelname,
-            "message": message,
-            "function": record.funcName,
-            "line": record.lineno,
-        }
-
-        return json.dumps(log_record, ensure_ascii=False)
+        timestamp = self.formatTime(record, self.datefmt)
+        return f"{timestamp} {record.levelname} [{record.funcName}:{record.lineno}] {record.getMessage()}"
 
 
 class ConsoleLogFormatter(logging.Formatter):
     """Custom log formatter for console log output."""
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
         """Format log record for console output.
 
         Args:
-            record: Log record containing event information
+            record (logging.LogRecord): Log record containing event information
 
         Returns:
-            Formatted string with timestamp, log level and message
+            str: Formatted log string
         """
-        try:
-            message = record.getMessage()
-        except Exception as err:
-            message = f"Failed to format log message. Error:{err}"
-
-        return f"[{self.formatTime(record)}] {record.levelname} {message}"
+        return f"[{self.formatTime(record)}] {record.levelname} {record.getMessage()}"
 
 
 class LoggerConfigurator:
@@ -142,14 +125,14 @@ class LoggerConfigurator:
         logger_name (str): name of the logger (defaults to "folder_sync")
     """
 
-    def __init__(self, file_log_path, logger_name="folder_sync"):
+    def __init__(self, file_log_path: str, logger_name: str = "folder_sync"):
         """Initializes the LoggerConfigurator.
 
         Args:
             file_log_path (str): path to the log file
             logger_name (str): name of the logger (defaults to "folder_sync")
         """
-        self.file_log_path = file_log_path
+        self.file_log_path = Path(file_log_path).resolve()
         self.logger_name = logger_name
 
     def setup_logger(self):
@@ -170,7 +153,7 @@ class LoggerConfigurator:
             file_handler = logging.FileHandler(
                 self.file_log_path, mode="w", encoding="utf-8"
             )
-            file_handler.setFormatter(JsonLogFormatter())
+            file_handler.setFormatter(FileLogFormatter())
             file_handler.setLevel(getattr(logging, file_log_level))
 
             logger.addHandler(file_handler)
@@ -224,7 +207,7 @@ class SynchronizeFiles:
         """Executes sync process for specified number of times."""
         for i in range(self.sync_numbers):
             self.logger.info(f"Starting sync run {i + 1}/{self.sync_numbers}")
-            self._sync_once()
+            self._sync_source_and_replica()
             self.logger.info(f"Finished sync run {i + 1}/{self.sync_numbers}")
 
             if i < self.sync_numbers - 1:  # prevent from sleeping at last iteration
@@ -448,19 +431,20 @@ def main():
     parser = CLIParser()
     sync_config = parser.load_config()
 
-    # Configure logger
-    logger = LoggerConfigurator(sync_config.log_file_path).setup_logger()
+    if sync_config:
+        # Configure logger
+        logger = LoggerConfigurator(sync_config.log_file_path).setup_logger()
 
-    # Configure synchronization
-    sync_task = SynchronizeFiles(
-        sync_config.sync_interval,
-        sync_config.sync_numbers,
-        sync_config.source_folder_path,
-        sync_config.replica_folder_path,
-        logger,
-    )
-    # Start synchronization
-    sync_task.start_sync_loop()
+        # Configure synchronization
+        sync_task = SynchronizeFiles(
+            sync_config.sync_interval,
+            sync_config.sync_numbers,
+            sync_config.source_folder_path,
+            sync_config.replica_folder_path,
+            logger,
+        )
+        # Start synchronization
+        sync_task.start_sync_loop()
 
 
 if __name__ == "__main__":
