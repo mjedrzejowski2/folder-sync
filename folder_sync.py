@@ -192,6 +192,7 @@ class SynchronizeFiles:
         sync_numbers (int): Number of total sync cycles
         source_folder_path (str): Absolute path to the source folder
         replica_folder_path (str): Absolute path to the replica folder
+        logger (logging.Logger): Logger for log events
     """
 
     def __init__(
@@ -209,7 +210,7 @@ class SynchronizeFiles:
             sync_numbers (int): Number of total sync cycles
             source_folder_path (str): Absolute path to the source folder
             replica_folder_path (str): Absolute path to the replica folder
-            logger (logging.Logger):
+            logger (logging.Logger): Logger for log events
         """
         self.sync_interval = sync_interval
         self.sync_numbers = sync_numbers
