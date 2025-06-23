@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from dataclasses import dataclass
 
+CHUNK_SIZE = 4096
+
 
 @dataclass
 class Config:
@@ -197,11 +199,11 @@ class SynchronizeFiles:
 
     def __init__(
         self,
-        sync_interval,
-        sync_numbers,
-        source_folder_path,
-        replica_folder_path,
-        logger,
+        sync_interval: int,
+        sync_numbers: int,
+        source_folder_path: str,
+        replica_folder_path: str,
+        logger: logging.Logger,
     ):
         """Initializes the SynchronizeFiles
 
@@ -218,7 +220,7 @@ class SynchronizeFiles:
         self.replica_folder_path = Path(replica_folder_path).resolve()
         self.logger = logger
 
-    def run(self):
+    def start_sync_loop(self):
         """Executes sync process for specified number of times."""
         for i in range(self.sync_numbers):
             self.logger.info(f"Starting sync run {i + 1}/{self.sync_numbers}")
@@ -229,98 +231,88 @@ class SynchronizeFiles:
                 self.logger.debug(f"Sleeping for {self.sync_interval} seconds")
                 time.sleep(self.sync_interval)
 
-    def _sync_once(self):
-        """Performs single full sync which include adding, updating and removing files."""
-        self._check_and_sync()
-        self._remove_extras()
+    def _sync_source_and_replica(self):
+        """Performs single full sync which include adding, updating and removing files for source and replica."""
+        self._update_replica_from_source()
+        self._sync_removals()
 
-    def _check_and_sync(self):
-        """Synchronizes the source folder with the replica folder by copying new or modified files from the source folder."""
+    def _update_replica_from_source(self):
+        """Copies new or updated files and directories from the source folder to the replica."""
         for root, _, files in os.walk(self.source_folder_path):
             root_path = Path(root)
-            replica_root_path = self._get_replica_root_path(root_path)
+            replica_root_path = self._get_relative_root_path(
+                root_path, self.source_folder_path, self.replica_folder_path
+            )
 
             if replica_root_path is None:
                 self.logger.error(f"Skipping sync: Invalid source path {root_path}")
                 continue
 
-            if not replica_root_path.exists():
-                try:
-                    replica_root_path.mkdir(parents=True)
-                    self.logger.info(f"Created directory: {replica_root_path}")
-                except OSError as err:
-                    self.logger.error(
-                        f"Failed to create directory {replica_root_path}. Error: {err}"
-                    )
-                    continue  # no dir no files
+            if not self._is_directory_existing(replica_root_path):
+                continue
 
             for file in files:
-                source_file_path = root_path / file
-                replica_file_path = replica_root_path / file
+                self._sync_file(file, root_path, replica_root_path)
 
-                if not replica_file_path.exists() or self._file_changed(
-                    source_file_path, replica_file_path
-                ):
-                    try:
-                        shutil.copy2(source_file_path, replica_file_path)
-                        self.logger.info(
-                            f"Copied/updated: {source_file_path} to {replica_file_path}"
-                        )
-                    except (OSError, shutil.Error) as err:
-                        self.logger.error(
-                            f"Failed to copy/update {source_file_path}. Error: {err}"
-                        )
+    def _sync_file(
+        self, filename: str, source_root_path: Path, replica_root_path: Path
+    ):
+        """Synchronize single file from source to replica.
 
-    def _remove_extras(self):
+        Args:
+            filename (str): Name of the file to synchronize
+            source_root_path (Path): Path to the source directory containing the file
+            replica_root_path (Path): Path to the replica directory where the file should be copied
+        """
+        source_file_path = source_root_path / filename
+        replica_file_path = replica_root_path / filename
+
+        if not replica_file_path.exists() or self._is_file_changed(
+            source_file_path, replica_file_path
+        ):
+            try:
+                shutil.copy2(source_file_path, replica_file_path)
+                self.logger.info(
+                    f"Copied/updated: {source_file_path} to {replica_file_path}"
+                )
+            except (OSError, shutil.Error) as err:
+                self.logger.error(
+                    f"Failed to copy/update {source_file_path}. Error: {err}"
+                )
+
+    def _sync_removals(self):
         """Removes files and directories from the replica folder that no longer exist in the source folder."""
-        for root, dirs, files in os.walk(self.replica_folder_path, topdown=False):
+        for root, _, files in os.walk(self.replica_folder_path, topdown=False):
             root_path = Path(root)
-            source_root_path = self._get_source_root_path(root_path)
+            source_root_path = self._get_relative_root_path(
+                root_path, self.replica_folder_path, self.source_folder_path
+            )
 
             if source_root_path is None:
                 self.logger.error(f"Skipping sync: Invalid replica path: {root_path}")
                 continue
 
+            if not self._is_directory_obsolete(source_root_path, root_path):
+                continue
+
             for file in files:
-                replica_file_path = root_path / file
-                source_file_path = source_root_path / file
+                self._remove_obsolote_file(file, source_root_path, root_path)
 
-                if not source_file_path.exists():
-                    try:
-                        replica_file_path.unlink()
-                        self.logger.info(f"Removed file: {replica_file_path}")
-                    except OSError as err:
-                        self.logger.error(
-                            f"Failed to remove file {replica_file_path}. Error: {err}"
-                        )
-
-            for dir in dirs:
-                replica_dir_path = root_path / dir
-                source_dir_path = source_root_path / dir
-
-                if not source_dir_path.exists():
-                    try:
-                        shutil.rmtree(replica_dir_path)
-                        self.logger.info(f"Removed directory: {replica_dir_path}")
-                    except OSError as err:
-                        self.logger.error(
-                            f"Failed to remove directory {replica_dir_path}. Error: {err}"
-                        )
-
-    def _sha256_check(self, file_path):
+    def _sha256_calculate(self, file_path: Path) -> str | None:
         """Computes the SHA-256 hash of the given file.
 
         Args:
-            file_path (str): Absolute path to the file for hash calculation
+            file_path (Path): Absolute path to the file for hash calculation
 
         Returns:
             str: The SHA-256 hexadecimal digest of the file
+            None: if failed to read file for hashing
         """
         hash_sha256 = hashlib.sha256()
 
         try:
             with open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
+                for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
                     hash_sha256.update(chunk)
             return hash_sha256.hexdigest()
         except OSError as err:
@@ -329,20 +321,110 @@ class SynchronizeFiles:
             )
             return None
 
-    def _file_changed(self, source_file, replica_file):
+    def _get_relative_root_path(
+        self, root_path: Path, base_folder_path: Path, target_base_path: Path
+    ) -> Path | None:
+        """Computes the corresponding target directory path for a given root path.
+        Args:
+            root_path (Path): Path inside the source or replica folder
+            base_folder_path (Path): Base path from which the relative path should be derived
+            target_base_path (Path): Base path to which the relative path will be appended
+
+        Returns:
+            Path: Corresponding path inside the target folder
+            None: If the root_path is not under the base_folder_path
+        """
+        try:
+            relative_path = root_path.relative_to(base_folder_path)
+            return target_base_path / relative_path
+        except ValueError as err:
+            self.logger.error(
+                f"Invalid replica path: {root_path} is not under base folder {base_folder_path}. Error: {err}"
+            )
+        return None
+
+    def _remove_obsolote_file(
+        self, filename: str, source_root_path: Path, replica_root_path: Path
+    ):
+        """Removes a file from the replica directory if it no longer exists in the source directory.
+
+        Args:
+            filename (str): Name of the file to check for obsolescence
+            source_root_path (Path): Path to the source directory that should contain the file
+            replica_root_path (Path): Path to the replica directory where the file currently exists
+        """
+        source_file_path = source_root_path / filename
+        replica_file_path = replica_root_path / filename
+
+        if not source_file_path.exists():
+            try:
+                replica_file_path.unlink()
+                self.logger.info(f"Removed file: {replica_file_path}")
+            except OSError as err:
+                self.logger.error(
+                    f"Failed to remove file {replica_file_path}. Error: {err}"
+                )
+
+    def _is_directory_obsolete(
+        self, source_directory_path: Path, replica_directory_path: Path
+    ) -> bool:
+        """Removes directory from replica if it no longer exists in source.
+
+        Args:
+            replica_dir_path (Path): Path to the directory in replica
+            source_dir_path (Path): Expected path in the source directory
+
+        Returns:
+            bool: True if directory was removed, False otherwise
+        """
+        if not source_directory_path.exists():
+            try:
+                shutil.rmtree(replica_directory_path)
+                self.logger.info(f"Removed directory: {replica_directory_path}")
+            except OSError as err:
+                self.logger.error(
+                    f"Failed to remove directory {replica_directory_path}. Error: {err}"
+                )
+                return False
+        return True
+
+    def _is_directory_existing(self, directory_path: Path) -> bool:
+        """Checks if directory exists, and creates it if it doesn't.
+
+        Args:
+            directory_path (Path): The path to the directory to check or create.
+
+        Returns:
+            bool: True if the directory exists or was created successfully,
+                False if creation failed
+        """
+        if not directory_path.exists():
+            try:
+                directory_path.mkdir(parents=True)
+                self.logger.info(f"Created directory: {directory_path}")
+            except OSError as err:
+                self.logger.error(
+                    f"Failed to create directory {directory_path}. Error: {err}"
+                )
+                return False
+        return True
+
+    def _is_file_changed(self, source_file: Path, replica_file: Path) -> bool:
         """Compares two files to determine if their contents differ using SHA-256 hashing.
 
         - If the source file cannot be read, syncing is skipped to avoid data loss.
         - If the replica cannot be read, it needs to be updated.
 
         Args:
-            source_file (Path): Path to the source file
+            source_file (Path): Path to the source file,
             replica_file (Path): Path to the replica file
 
         Returns:
-            bool: True if the files differ"""
-        source_hash = self._sha256_check(source_file)
-        replica_hash = self._sha256_check(replica_file)
+            bool: True if the files differ or failed to read replica file,
+                False if the files don't differ or failed to read source file
+        """
+        source_hash = self._sha256_calculate(source_file)
+        replica_hash = self._sha256_calculate(replica_file)
 
         if source_hash is None:
             self.logger.error(
@@ -355,46 +437,10 @@ class SynchronizeFiles:
                 f"Starting sync: failed to read replica file {replica_file}"
             )
             return True  # Trigger sync to recreate it
-
+        self.logger.info(
+            f"SHA256 calculated correctly for both files: {source_file.stem}, {replica_file.stem}"
+        )
         return source_hash != replica_hash
-
-    def _get_replica_root_path(self, source_root_path):
-        """
-        Computes the corresponding replica directory for given source directory.
-
-        Args:
-            source_root_path (Path): Path inside the source directory
-
-        Returns:
-            Path: Corresponding path inside the replica folder
-        """
-        try:
-            source_rel_path = source_root_path.relative_to(self.source_folder_path)
-            return self.replica_folder_path / source_rel_path
-        except ValueError as err:
-            self.logger.error(
-                f"Invalid source path: {source_root_path} is not under source folder. Error: {err}"
-            )
-            return None
-
-    def _get_source_root_path(self, replica_root_path: Path) -> Path:
-        """
-        Computes the corresponding source directory for a given replica directory.
-
-        Args:
-            replica_root_path (Path): Path inside the replica directory
-
-        Returns:
-            Path: Corresponding path inside the source folder
-        """
-        try:
-            replica_rel_path = replica_root_path.relative_to(self.replica_folder_path)
-            return self.source_folder_path / replica_rel_path
-        except ValueError as err:
-            self.logger.error(
-                f"Invalid replica path: {replica_root_path} is not under replica folder. Error: {err}"
-            )
-            return None
 
 
 def main():
@@ -414,7 +460,7 @@ def main():
         logger,
     )
     # Start synchronization
-    sync_task.run()
+    sync_task.start_sync_loop()
 
 
 if __name__ == "__main__":
