@@ -1,6 +1,5 @@
 import os
 import logging
-import json
 import argparse
 import shutil
 import hashlib
@@ -10,6 +9,11 @@ from pathlib import Path
 from dataclasses import dataclass
 
 CHUNK_SIZE = 4096
+try:
+    CONSOLE_LOG_LEVEL = logging.INFO
+    FILE_LOG_LEVEL = logging.DEBUG
+except AttributeError:
+    logging.warning("Invalid input for log level")
 
 
 @dataclass
@@ -34,14 +38,19 @@ class Config:
 class CLIParser:
     """Reads the required arguments for the folder synchronization program."""
 
-    def __init__(self):
-        """Initializes the CLIParser"""
+    def __init__(self, logger: logging.Logger):
+        """Initializes the CLIParser
+
+        Args:
+            logger (logging.Logger): Logger for log events
+        """
+        self.logger = logger
         self.parser = argparse.ArgumentParser(
             description="One-way folder synchronization tool"
         )
         self._setup_arguments()
 
-    def _setup_arguments(self):
+    def _setup_arguments(self) -> None:
         """Defines expected arguments.
 
         Args:
@@ -49,7 +58,7 @@ class CLIParser:
             replica_folder_path (str): Path to replica folder
             sync_interval (int): Number of intervals between synchronizations
             sync_numbers (int): Total number of synchronization runs
-            log_file_path (str): Path to log file
+            log_file_path (str): Path to log file (.log format)
         """
         self.parser.add_argument(
             "source_folder_path", type=str, help="Path to source folder"
@@ -78,11 +87,11 @@ class CLIParser:
             raw_args = self.parser.parse_args()
             return Config(**vars(raw_args))
         except argparse.ArgumentError as err:
-            print(f"Argument parsing error: {err}")
-            return None
+            self.logger.error(f"Argument parsing error: {err}")
         except SystemExit as err:
-            print(f"Invalid command-line arguments or '--help' called. Error: {err}")
-            return None
+            self.logger.error(
+                f"Invalid command-line arguments or '--help' called. Error: {err}"
+            )
 
 
 class FileLogFormatter(logging.Formatter):
@@ -118,55 +127,85 @@ class ConsoleLogFormatter(logging.Formatter):
 
 
 class LoggerConfigurator:
-    """Configures logging to the JSON log file and to the console.
+    """Configures logging to the log file and to the console.
 
     Attributes:
-        file_log_path (str): path to the log file
         logger_name (str): name of the logger (defaults to "folder_sync")
     """
 
-    def __init__(self, file_log_path: str, logger_name: str = "folder_sync"):
+    def __init__(self, logger_name: str = "folder_sync"):
         """Initializes the LoggerConfigurator.
 
         Args:
-            file_log_path (str): path to the log file
             logger_name (str): name of the logger (defaults to "folder_sync")
         """
-        self.file_log_path = Path(file_log_path).resolve()
         self.logger_name = logger_name
 
-    def setup_logger(self):
+    def setup_logger(self) -> logging.Logger:
         """Configure the logger with file and console handlers.
 
         Returns:
-            logging.Logger: Configured logger object
+            logger (logging.Logger): Configured logger object
         """
-        console_log_level = "INFO"
-        file_log_level = "INFO"
 
         logger = logging.getLogger(self.logger_name)
         logger.setLevel(logging.DEBUG)
         logger.handlers.clear()
 
-        # File handler
+        return logger
+
+    def setup_file_handler(
+        self,
+        logger: logging.Logger,
+        file_log_path: str,
+    ) -> None:
+        """Initializes and attaches a file log handler to the given logger.
+
+        Args:
+            logger (logging.Logger): logger object to which the file handler will be added
+            file_log_path (str): path to the log file
+        """
+        try:
+            file_log_path = Path(file_log_path).resolve()
+        except (ValueError, TypeError) as err:
+            logger.warning(f"Invalid log file path. Error: {err}")
+            logging.warning("Logging to file unavailable")
+            logger.propagate = False
+            return
+
         try:
             file_handler = logging.FileHandler(
-                self.file_log_path, mode="w", encoding="utf-8"
+                file_log_path, mode="w", encoding="utf-8"
             )
             file_handler.setFormatter(FileLogFormatter())
-            file_handler.setLevel(getattr(logging, file_log_level))
-
+            file_handler.setLevel(FILE_LOG_LEVEL)
             logger.addHandler(file_handler)
         except OSError as err:
-            print(f"Couldn't initialize log setup for file handler. Error: {err}")
+            logging.warning(f"Couldn't initialize file log handler. Error: {err}")
+            logging.warning("Logging to file unavailable")
+            logger.propagate = False
+        except (TypeError, NameError) as err:
+            logging.warning(f"Couldn't set file log level. Error: {err}")
+            logging.warning("Logging to file unavailable")
+            logger.propagate = False
 
-        # Console handler
+    def setup_console_handler(self, logger: logging.Logger) -> None:
+        """Initializes and attaches a console log handler to the given logger.
+
+        Args:
+            logger (logging.Logger): logger object to which the console handler will be added
+        """
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(ConsoleLogFormatter())
-        console_handler.setLevel(getattr(logging, console_log_level))
+        try:
+            console_handler.setLevel(CONSOLE_LOG_LEVEL)
+        except (TypeError, NameError) as err:
+            logging.warning(f"Couldn't set console log level. Error: {err}")
+            logging.warning("Logging to console unavailable")
+            logger.propagate = False
+            return
 
         logger.addHandler(console_handler)
-        return logger
 
 
 class SynchronizeFiles:
@@ -203,7 +242,7 @@ class SynchronizeFiles:
         self.replica_folder_path = Path(replica_folder_path).resolve()
         self.logger = logger
 
-    def start_sync_loop(self):
+    def start_sync_loop(self) -> None:
         """Executes sync process for specified number of times."""
         for i in range(self.sync_numbers):
             self.logger.info(f"Starting sync run {i + 1}/{self.sync_numbers}")
@@ -214,12 +253,12 @@ class SynchronizeFiles:
                 self.logger.debug(f"Sleeping for {self.sync_interval} seconds")
                 time.sleep(self.sync_interval)
 
-    def _sync_source_and_replica(self):
+    def _sync_source_and_replica(self) -> None:
         """Performs single full sync which include adding, updating and removing files for source and replica."""
         self._update_replica_from_source()
         self._sync_removals()
 
-    def _update_replica_from_source(self):
+    def _update_replica_from_source(self) -> None:
         """Copies new or updated files and directories from the source folder to the replica."""
         for root, _, files in os.walk(self.source_folder_path):
             root_path = Path(root)
@@ -239,7 +278,7 @@ class SynchronizeFiles:
 
     def _sync_file(
         self, filename: str, source_root_path: Path, replica_root_path: Path
-    ):
+    ) -> None:
         """Synchronize single file from source to replica.
 
         Args:
@@ -263,7 +302,7 @@ class SynchronizeFiles:
                     f"Failed to copy/update {source_file_path}. Error: {err}"
                 )
 
-    def _sync_removals(self):
+    def _sync_removals(self) -> None:
         """Removes files and directories from the replica folder that no longer exist in the source folder."""
         for root, _, files in os.walk(self.replica_folder_path, topdown=False):
             root_path = Path(root)
@@ -302,7 +341,8 @@ class SynchronizeFiles:
             self.logger.error(
                 f"Failed to read file for hashing: {file_path}. Error: {err}"
             )
-            return None
+        except TypeError as err:
+            self.logger.error(f"Invalid input for chunk size. Error: {err}")
 
     def _get_relative_root_path(
         self, root_path: Path, base_folder_path: Path, target_base_path: Path
@@ -324,11 +364,10 @@ class SynchronizeFiles:
             self.logger.error(
                 f"Invalid replica path: {root_path} is not under base folder {base_folder_path}. Error: {err}"
             )
-        return None
 
     def _remove_obsolote_file(
         self, filename: str, source_root_path: Path, replica_root_path: Path
-    ):
+    ) -> None:
         """Removes a file from the replica directory if it no longer exists in the source directory.
 
         Args:
@@ -427,13 +466,18 @@ class SynchronizeFiles:
 
 
 def main():
+    # Configure logger
+    logger_config = LoggerConfigurator()
+    logger = logger_config.setup_logger()
+    logger_config.setup_console_handler(logger)
+
     # Parse arguments
-    parser = CLIParser()
+    parser = CLIParser(logger)
     sync_config = parser.load_config()
 
     if sync_config:
-        # Configure logger
-        logger = LoggerConfigurator(sync_config.log_file_path).setup_logger()
+        # Configure logger file handler
+        logger_config.setup_file_handler(logger, sync_config.log_file_path)
 
         # Configure synchronization
         sync_task = SynchronizeFiles(
