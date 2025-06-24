@@ -33,7 +33,7 @@ class Config:
 
 
 class CLIParser:
-    """Reads the required arguments for the folder synchronization program.
+    """Reads the required arguments for the folder synchronization program and validate required paths (source and replica).
 
     Attributes:
         logger (logging.Logger): Logger for log events
@@ -77,15 +77,40 @@ class CLIParser:
         )
         self.parser.add_argument("log_file_path", type=Path, help="Path to log file")
 
+    def _is_path_valid(self, path: Path) -> Path | None:
+        """Resolves and validates a path.
+
+        Args:
+            path (Path): The path to validate and resolve
+
+        Returns:
+            Path: The resolved absolute Path if valid
+            None: otherwise
+        """
+        try:
+            return path.resolve(strict=True)
+        except OSError as err:
+            self.logger.error(f"OSError during path validation for {path}: {err}")
+            return None
+
     def load_config(self) -> Config | None:
         """Parses the CLI arguments and returns them as Config dataclass.
 
         Returns:
-            Config: Object containing all parsed arguments
-            None: if parsing failed
+            Config: Object containing all parsed arguments and resolved source and replica paths
+            None: if parsing failed or if source or replica directories dont exist
         """
         try:
             raw_args = self.parser.parse_args()
+            raw_args.source_folder_path = self._is_path_valid(
+                raw_args.source_folder_path
+            )
+            raw_args.replica_folder_path = self._is_path_valid(
+                raw_args.replica_folder_path
+            )
+            if None in (raw_args.source_folder_path, raw_args.replica_folder_path):
+                return None
+
             return Config(**vars(raw_args))
         except argparse.ArgumentError as err:
             self.logger.error(f"Argument parsing error: {err}")
@@ -97,86 +122,6 @@ class CLIParser:
             self.logger.error(
                 f"Invalid command-line arguments or '--help' called. Error: {err}"
             )
-            return None
-
-
-class ConfigValidator:
-    """Validates and resolves paths in the Config object.
-
-    Attributes:
-        config (Config): Object containing all parsed arguments to validate and conert paths to Path objects if needed
-        logger (logging.Logger): Logger for log events
-    """
-
-    def __init__(self, config: Config, logger: logging.Logger):
-        """Initialize the ConfigValidator
-
-        Args:
-            config (Config): Object containing all parsed arguments to validate and conert paths to Path objects if needed
-            logger (logging.Logger): Logger for log events
-        """
-        self.logger = logger
-        self.config = config
-
-    def validate(self) -> bool:
-        """Validates all paths in the Config object and resolves them.
-
-        Returns:
-            bool: True if source and replica paths are passed validations, False otherwise.
-        """
-        source_path = self._to_resolved_path(self.config.source_folder_path)
-        replica_path = self._to_resolved_path(self.config.replica_folder_path)
-        log_path = self._to_resolved_path(self.config.log_file_path)
-
-        if source_path is None or not self._is_existing_directory(source_path):
-            self.logger.error("Validation failed for source folder path.")
-            return False
-
-        if replica_path is None or not self._is_existing_directory(replica_path):
-            self.logger.error("Validation failed for replica folder path.")
-            return False
-
-        if log_path is None:
-            self.logger.error("Validation failed for log file path.")
-
-        self.config.source_folder_path = source_path
-        self.config.replica_folder_path = replica_path
-        self.config.log_file_path = log_path
-
-        return True
-
-    def _is_existing_directory(self, path: Path) -> bool:
-        """Checks if the given path exists and is a directory.
-
-        Args:
-            path (Path): The path to validate
-
-        Returns:
-            bool: True if the path exists and is a directory, False otherwise.
-        """
-        if not path.exists():
-            self.logger.error(f"{path} folder does not exist: {path}")
-            return False
-
-        if not path.is_dir():
-            self.logger.error(f"{path} path is not a directory: {path}")
-            return False
-
-        return True
-
-    def _to_resolved_path(self, path: Path | str) -> Path:
-        """Converts a string or Path into an absolute resolved Path.
-
-        Args:
-            path (str | Path): The input path to resolve.
-
-        Returns:
-            Path | None: Resolved Path if successful, otherwise None.
-        """
-        try:
-            return Path(path).resolve()
-        except (ValueError, TypeError) as err:
-            self.logger.error(f"{path} path is invalid: {err}")
             return None
 
 
@@ -243,13 +188,13 @@ class LoggerConfigurator:
     def setup_file_handler(
         self,
         logger: logging.Logger,
-        file_log_path: str,
+        file_log_path: Path,
     ) -> None:
         """Initializes and attaches a file log handler to the given logger.
 
         Args:
             logger (logging.Logger): logger object to which the file handler will be added
-            file_log_path (str): path to the log file
+            file_log_path (Path): path to the log file
         """
         try:
             file_log_path = Path(file_log_path).resolve()
@@ -302,8 +247,8 @@ class SynchronizeFiles:
     Attributes:
         sync_interval (int): Interval in seconds between sync runs
         sync_numbers (int): Number of total sync cycles
-        source_folder_path (str): Absolute path to the source folder
-        replica_folder_path (str): Absolute path to the replica folder
+        source_folder_path (Path): Absolute path to the source folder
+        replica_folder_path (Path): Absolute path to the replica folder
         logger (logging.Logger): Logger for log events
     """
 
@@ -311,8 +256,8 @@ class SynchronizeFiles:
         self,
         sync_interval: int,
         sync_numbers: int,
-        source_folder_path: str,
-        replica_folder_path: str,
+        source_folder_path: Path,
+        replica_folder_path: Path,
         logger: logging.Logger,
     ):
         """Initializes the SynchronizeFiles
@@ -320,18 +265,15 @@ class SynchronizeFiles:
         Args:
             sync_interval (int): Interval in seconds between sync runs
             sync_numbers (int): Number of total sync cycles
-            source_folder_path (str): Absolute path to the source folder
-            replica_folder_path (str): Absolute path to the replica folder
+            source_folder_path (Path): Absolute path to the source folder
+            replica_folder_path (Path): Absolute path to the replica folder
             logger (logging.Logger): Logger for log events
         """
         self.sync_interval = sync_interval
         self.sync_numbers = sync_numbers
         self.logger = logger
-        try:
-            self.source_folder_path = Path(source_folder_path).resolve()
-            self.replica_folder_path = Path(replica_folder_path).resolve()
-        except (ValueError, TypeError) as err:
-            logger.error(f"Invalid input path. Error: {err}")
+        self.source_folder_path = source_folder_path
+        self.replica_folder_path = replica_folder_path
 
     def start_sync_loop(self) -> None:
         """Executes sync process for specified number of times."""
@@ -405,7 +347,7 @@ class SynchronizeFiles:
                 self.logger.error(f"Skipping sync: Invalid replica path: {root_path}")
                 continue
 
-            if not self._is_directory_obsolete(source_root_path, root_path):
+            if self._is_directory_obsolete(source_root_path, root_path):
                 continue
 
             for file in files:
@@ -570,11 +512,6 @@ def main():
     sync_config = parser.load_config()
 
     if not sync_config:
-        return
-
-    # Validate paths
-    config_validator = ConfigValidator(sync_config, logger)
-    if not config_validator.validate:
         return
 
     # Configure logger file handler
