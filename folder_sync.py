@@ -20,7 +20,7 @@ class Config:
     Attributes:
         source_folder_path (Path): Path to source folder
         replica_folder_path (Path): Path to replica folder
-        sync_interval (int): Number of intervals between synchronizations
+        sync_interval (int): Synchronization interval in seconds
         sync_numbers (int): Total number of synchronization runs
         log_file_path (Path): Path to log file (.log format)
     """
@@ -47,7 +47,26 @@ class CLIParser:
         """
         self.logger = logger
         self.parser = argparse.ArgumentParser(
-            description="One-way folder synchronization tool"
+            description=(
+                "A command-line tool for one-way folder synchronization.\n\n"
+                "Creates a mirror of the source directory in the replica directory by:\n"
+                "- Comparing files using SHA-256,\n"
+                "- Copying new files,\n"
+                "- Updating changed files,\n"
+                "- Removing files no longer present in the source.\n\n"
+                "Synchronization occurs at fixed time intervals and is repeated specified number of times."
+            ),
+            epilog=(
+                "Example usage:\n"
+                "  python sync.py /home/user/source /home/user/replica 60 10 sync.log\n\n"
+                "Where:\n"
+                "  /home/user/source   - Source folder to be monitored\n"
+                "  /home/user/replica  - Replica folder to receive synchronized data\n"
+                "  60                  - Synchronization interval in seconds\n"
+                "  10                  - Total number of synchronization runs\n"
+                "  sync.log            - Path to the log file"
+            ),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         self._setup_arguments()
 
@@ -57,7 +76,7 @@ class CLIParser:
         Args:
             source_folder_path (Path): Path to source folder
             replica_folder_path (Path): Path to replica folder
-            sync_interval (int): Number of intervals between synchronizations
+            sync_interval (int): Synchronization interval in seconds
             sync_numbers (int): Total number of synchronization runs
             log_file_path (Path): Path to log file (.log format)
         """
@@ -70,7 +89,7 @@ class CLIParser:
         self.parser.add_argument(
             "sync_interval",
             type=int,
-            help="Number of intervals between synchronizations",
+            help="Synchronization interval in seconds",
         )
         self.parser.add_argument(
             "sync_numbers", type=int, help="Total number of synchronization runs"
