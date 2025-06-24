@@ -88,10 +88,12 @@ class CLIParser:
             return Config(**vars(raw_args))
         except argparse.ArgumentError as err:
             self.logger.error(f"Argument parsing error: {err}")
+            return None
         except SystemExit as err:
             self.logger.error(
                 f"Invalid command-line arguments or '--help' called. Error: {err}"
             )
+            return None
 
 
 class FileLogFormatter(logging.Formatter):
@@ -171,7 +173,7 @@ class LoggerConfigurator:
             logger.warning(f"Invalid log file path. Error: {err}")
             logging.warning("Logging to file unavailable")
             logger.propagate = False
-            return
+            return None
 
         try:
             file_handler = logging.FileHandler(
@@ -184,10 +186,12 @@ class LoggerConfigurator:
             logging.warning(f"Couldn't initialize file log handler. Error: {err}")
             logging.warning("Logging to file unavailable")
             logger.propagate = False
+            return None
         except (TypeError, NameError) as err:
             logging.warning(f"Couldn't set file log level. Error: {err}")
             logging.warning("Logging to file unavailable")
             logger.propagate = False
+            return None
 
     def setup_console_handler(self, logger: logging.Logger) -> None:
         """Initializes and attaches a console log handler to the given logger.
@@ -203,7 +207,7 @@ class LoggerConfigurator:
             logging.warning(f"Couldn't set console log level. Error: {err}")
             logging.warning("Logging to console unavailable")
             logger.propagate = False
-            return
+            return None
 
         logger.addHandler(console_handler)
 
@@ -301,6 +305,7 @@ class SynchronizeFiles:
                 self.logger.error(
                     f"Failed to copy/update {source_file_path}. Error: {err}"
                 )
+                return None
 
     def _sync_removals(self) -> None:
         """Removes files and directories from the replica folder that no longer exist in the source folder."""
@@ -341,8 +346,10 @@ class SynchronizeFiles:
             self.logger.error(
                 f"Failed to read file for hashing: {file_path}. Error: {err}"
             )
+            return None
         except TypeError as err:
             self.logger.error(f"Invalid input for chunk size. Error: {err}")
+            return None
 
     def _get_relative_root_path(
         self, root_path: Path, base_folder_path: Path, target_base_path: Path
@@ -364,6 +371,7 @@ class SynchronizeFiles:
             self.logger.error(
                 f"Invalid replica path: {root_path} is not under base folder {base_folder_path}. Error: {err}"
             )
+            return None
 
     def _remove_obsolote_file(
         self, filename: str, source_root_path: Path, replica_root_path: Path
@@ -386,6 +394,7 @@ class SynchronizeFiles:
                 self.logger.error(
                     f"Failed to remove file {replica_file_path}. Error: {err}"
                 )
+                return None
 
     def _is_directory_obsolete(
         self, source_directory_path: Path, replica_directory_path: Path
