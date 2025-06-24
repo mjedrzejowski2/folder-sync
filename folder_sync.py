@@ -96,20 +96,26 @@ class CLIParser:
         )
         self.parser.add_argument("log_file_path", type=Path, help="Path to log file")
 
-    def _is_path_valid(self, path: Path) -> Path | None:
-        """Resolves and validates a path.
+    def _validate_directory_path(self, directory_path: Path) -> Path | None:
+        """Resolves and validates a path to directory.
 
         Args:
-            path (Path): The path to validate and resolve
+            directory_path (Path): The directory path to validate and resolve
 
         Returns:
             Path: The resolved absolute Path if valid
             None: otherwise
         """
         try:
-            return path.resolve(strict=True)
+            resolved = directory_path.resolve(strict=True)
+            if not resolved.is_dir():
+                self.logger.error(f"Provided path is not a directory: {resolved}")
+                return None
+            return resolved
         except OSError as err:
-            self.logger.error(f"OSError during path validation for {path}: {err}")
+            self.logger.error(
+                f"OSError during path validation for {directory_path}: {err}"
+            )
             return None
 
     def load_config(self) -> Config | None:
@@ -121,15 +127,14 @@ class CLIParser:
         """
         try:
             raw_args = self.parser.parse_args()
-            raw_args.source_folder_path = self._is_path_valid(
+            raw_args.source_folder_path = self._validate_directory_path(
                 raw_args.source_folder_path
             )
-            raw_args.replica_folder_path = self._is_path_valid(
+            raw_args.replica_folder_path = self._validate_directory_path(
                 raw_args.replica_folder_path
             )
             if None in (raw_args.source_folder_path, raw_args.replica_folder_path):
                 return None
-
             return Config(**vars(raw_args))
         except argparse.ArgumentError as err:
             self.logger.error(f"Argument parsing error: {err}")
@@ -139,7 +144,7 @@ class CLIParser:
             if err.code == 0:
                 return None
             self.logger.error(
-                f"Invalid command-line arguments or '--help' called. Error: {err}"
+                f"Invalid or missing command-line arguments. Error: {err}"
             )
             return None
 
@@ -366,7 +371,7 @@ class SynchronizeFiles:
                 self.logger.error(f"Skipping sync: Invalid replica path: {root_path}")
                 continue
 
-            if self._is_directory_obsolete(source_root_path, root_path):
+            if self._remove_directory_if_source_missing(source_root_path, root_path):
                 continue
 
             for file in files:
@@ -442,7 +447,7 @@ class SynchronizeFiles:
                     f"Failed to remove file {replica_file_path}. Error: {err}"
                 )
 
-    def _is_directory_obsolete(
+    def _remove_directory_if_source_missing(
         self, source_directory_path: Path, replica_directory_path: Path
     ) -> bool:
         """Removes directory from replica if it no longer exists in source.
