@@ -371,7 +371,9 @@ class SynchronizeFiles:
                 self.logger.error(f"Skipping sync: Invalid replica path: {root_path}")
                 continue
 
-            if self._remove_directory_if_source_missing(source_root_path, root_path):
+            if not self._remove_directory_if_source_missing(
+                source_root_path, root_path
+            ):
                 continue
 
             for file in files:
@@ -467,7 +469,7 @@ class SynchronizeFiles:
                 self.logger.error(
                     f"Failed to remove directory {replica_directory_path}. Error: {err}"
                 )
-                return False
+            return False
         return True
 
     def _ensure_directory_exists(self, directory_path: Path) -> bool:
