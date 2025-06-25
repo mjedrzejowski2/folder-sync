@@ -50,7 +50,9 @@ class CLIParser:
             description=(
                 "A command-line tool for one-way folder synchronization.\n\n"
                 "Creates a mirror of the source directory in the replica directory by:\n"
-                "- Comparing files using SHA-256,\n"
+                "- Synchronizing entire folders and subfolders,\n"
+                "- Comparing file permissions,\n"
+                "- Comparing files content using SHA-256,\n"
                 "- Copying new files,\n"
                 "- Updating changed files,\n"
                 "- Removing files no longer present in the source.\n\n"
@@ -104,7 +106,7 @@ class CLIParser:
 
         Returns:
             Path: The resolved absolute Path if valid
-            None: otherwise
+            None: if path not valid
         """
         try:
             resolved = directory_path.resolve(strict=True)
@@ -133,6 +135,7 @@ class CLIParser:
             raw_args.replica_folder_path = self._validate_directory_path(
                 raw_args.replica_folder_path
             )
+
             if None in (raw_args.source_folder_path, raw_args.replica_folder_path):
                 return None
             return Config(**vars(raw_args))
