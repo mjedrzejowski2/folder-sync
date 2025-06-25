@@ -494,7 +494,7 @@ class SynchronizeFiles:
         return True
 
     def _is_file_changed(self, source_file: Path, replica_file: Path) -> bool:
-        """Compares two files to determine if their contents differ using SHA-256 hashing.
+        """Checks if the file content or permissions differ between source and replica.
 
         - If the source file cannot be read, syncing is skipped to avoid data loss.
         - If the replica cannot be read, it needs to be updated.
@@ -507,6 +507,9 @@ class SynchronizeFiles:
             bool: True if the files differ or failed to read replica file,
                 False if the files don't differ or failed to read source file
         """
+        if self._are_permissions_different(source_file, replica_file):
+            return True
+
         source_hash = self._sha256_calculate(source_file)
         replica_hash = self._sha256_calculate(replica_file)
 
@@ -518,13 +521,45 @@ class SynchronizeFiles:
 
         if replica_hash is None:
             self.logger.warning(
-                f"Starting sync: failed to read replica file {replica_file}"
+                f"Failed to read replica file {replica_file}. Starting sync to recreate it."
             )
-            return True  # Trigger sync to recreate it
+            return True
         self.logger.info(
             f"SHA256 calculated correctly for both files: {source_file.stem}, {replica_file.stem}"
         )
-        return source_hash != replica_hash
+        if source_hash != replica_hash:
+            self.logger.info(f"Files content differ: {source_file} and {replica_file} ")
+            return True
+
+        return False
+
+    def _are_permissions_different(self, source_file: Path, replica_file: Path) -> bool:
+        """Checks whether file permissions differ between source and replica.
+
+        Args:
+            source_file (Path): Path to the source file
+            replica_file (Path): Path to the replica file
+
+        Returns:
+            bool: True if permissions are different,
+                False otherwise
+        """
+        try:
+            source_mode = source_file.stat().st_mode & 0o777
+            replica_mode = replica_file.stat().st_mode & 0o777
+
+            if source_mode != replica_mode:
+                self.logger.info(
+                    f"Permission missmatch: {source_file}: {oct(source_mode)} and {replica_file}: {oct(replica_mode)}"
+                )
+                return True
+            return False
+        except OSError as err:
+            self.logger.error(
+                f"Failed to compare permissions: {source_file} and {replica_file}. Error: {err}"
+                f"Assuming difference..."
+            )
+            return True
 
 
 def main():
